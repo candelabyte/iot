@@ -1,154 +1,195 @@
-//RX
+// LoRa Receiver (RX) Node Implementation
 
-#include <SPI.h>
-#include <RH_RF95.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <SPI.h>              // Include SPI library for communication with the LoRa module
+#include <RH_RF95.h>          // Include RadioHead library for LoRa radio
+#include <Wire.h>             // Include Wire library for I2C communication with the OLED display
+#include <Adafruit_GFX.h>     // Include Adafruit GFX library for graphics
+#include <Adafruit_SSD1306.h> // Include Adafruit SSD1306 library for OLED display
 
+// OLED Display Configuration
 #define SCREEN_WIDTH 128  // OLED display width, in pixels
 #define SCREEN_HEIGHT 32  // OLED display height, in pixels
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
 
-#define node_id 2
+// Node identification - each node in the network has a unique ID
+#define node_id 2        // This receiver node's ID
 
-#define RFM95_CS 10
-#define RFM95_RST 9
-#define RFM95_INT 2
+// LoRa Radio Module Pin Configuration
+#define RFM95_CS 10      // Chip select pin
+#define RFM95_RST 9      // Reset pin
+#define RFM95_INT 2      // Interrupt pin
  
-// Change to 434.0 or other frequency, must match RX's freq!
-#define RF95_FREQ 915.0
+// LoRa Radio Frequency - must match the transmitter's frequency
+#define RF95_FREQ 915.0  // 915 MHz frequency band (can be changed to 433 MHz or other bands)
  
-// Singleton instance of the radio driver
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
+// Create an instance of the radio driver
+RH_RF95 rf95(RFM95_CS, RFM95_INT);  // Initialize with the CS and INT pins
 
+// Create an instance of the OLED display
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
  
-void(* resetFunc) (void) = 0; //declare reset function at address 0
+// Software reset function - allows the device to be reset programmatically
+void(* resetFunc) (void) = 0; // Declare reset function at address 0
 
 void setup() 
 {
-  Serial.begin(9600);
-  delay(100);
+  Serial.begin(9600);  // Initialize serial communication at 9600 baud
+  delay(100);          // Short delay for stability
   
-  // Manual reset
-  digitalWrite(RFM95_RST, LOW);
-  delay(10);
-  digitalWrite(RFM95_RST, HIGH);
-  delay(10);
+  // Manual reset of the LoRa module
+  digitalWrite(RFM95_RST, LOW);   // Set reset pin low to reset
+  delay(10);                      // Wait 10ms
+  digitalWrite(RFM95_RST, HIGH);  // Set reset pin high to enable
+  delay(10);                      // Wait 10ms for module to stabilize
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address or 0x3D for
+  // Initialize the OLED display
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3C for most 128x32 OLED displays
     Serial.println(F("SSD1306 allocation failed"));
-      for (;;)
-      {
-          delay(1000);
-      }
+    // Infinite loop if display initialization fails
+    for (;;)
+    {
+        delay(1000);
     }
-      // Setup oled display
-    display.setTextSize(1);      // Normal 1:1 pixel scale
-    display.setTextColor(WHITE); // Draw white text
-    display.setCursor(0, 0);     // Start at top-left corner
-    display.clearDisplay();
+  }
+  
+  // Configure OLED display settings
+  display.setTextSize(1);      // Normal 1:1 pixel scale
+  display.setTextColor(WHITE); // Draw white text
+  display.setCursor(0, 0);     // Start at top-left corner
+  display.clearDisplay();      // Clear the display buffer
 
+  // Initialize the LoRa radio module
   while (!rf95.init()) {
     Serial.println("LoRa radio init failed");
-   display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);
+    // Display error message on OLED
+    display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);  // Clear top line
     display.setCursor(0, 0);
     display.println("Setup Failed");
-    display.display();
-    while (1);
+    display.display();  // Update display with new content
+    while (1);  // Infinite loop on failure
   }
   Serial.println("LoRa radio init OK!");
 
-  // Defaults after init are 915.0MHz, modulation GFSK_Rb250Fd250, +13dbM
+  // Set the LoRa radio frequency
   if (!rf95.setFrequency(RF95_FREQ)) {
     Serial.println("setFrequency failed");
-    while (1);
+    while (1);  // Infinite loop on failure
   }
   Serial.print("Set Freq to: "); Serial.println(RF95_FREQ);
- display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);
+  
+  // Display success message on OLED
+  display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);  // Clear top line
   display.setCursor(0, 0);
   display.println("Setup Successful");
-  display.display();
-  // Defaults after init are 915.0MHz, 13dBm, Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on
+  display.display();  // Update display with new content
+  
+  // Note: Default LoRa settings after initialization:
+  // - Frequency: 915.0MHz
+  // - Power: 13dBm
+  // - Bandwidth: 125 kHz
+  // - Coding Rate: 4/5
+  // - Spreading Factor: 128chips/symbol
+  // - CRC: enabled
 
-  // The default transmitter power is 13dBm, using PA_BOOST.
-  // If you are using RFM95/96/97/98 modules which uses the PA_BOOST transmitter pin, then 
-  // you can set transmitter powers from 5 to 23 dBm:
-  rf95.setTxPower(13, false);
+  // Set the transmitter power (used for acknowledgment packets)
+  rf95.setTxPower(13, false);  // 13 dBm power, no RFO pin (using PA_BOOST)
 }
 
+// Function to validate the checksum of received data
+// Uses XOR (exclusive OR) of all bytes in the message to verify data integrity
 bool validateChecksum(uint8_t *data, uint8_t len, uint8_t receivedChecksum) {
     uint8_t calculatedChecksum = 0;
+    // Calculate checksum by XORing all bytes in the message (excluding the checksum byte)
     for (uint8_t i = 0; i < len; i++) {
         calculatedChecksum ^= data[i];  // XOR checksum
     }
+    // Compare calculated checksum with the received checksum
     return calculatedChecksum == receivedChecksum;
 }
 
 void loop()
 {
+  // Check if there's any incoming LoRa packet
   if (rf95.available())
   {
-    // Should be a message for us now   
-    uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
-    uint8_t len = sizeof(buf);
-    display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);
+    // Buffer to store the received message
+    uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];  // Maximum message length supported by RadioHead
+    uint8_t len = sizeof(buf);             // Length of the buffer
+    
+    // Update display to show we're waiting for a message
+    display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);  // Clear top line
     display.setCursor(0, 0);
     display.println("Waiting for Reply");
     display.display();
 
+    // Try to receive the message
     if (rf95.recv(buf, &len))
     {
+      // Check for valid message format - first byte should be 0xAA (start byte)
       if (buf[0] != 0xAA) {
         Serial.println("Invalid message start byte");
+        // Print the message anyway for debugging
         for (int i = 0; i < len - 1; i++) {  // Exclude checksum and starting
           Serial.print((char)buf[i]);
         }
         Serial.println();
-        return;
+        return;  // Skip further processing
       }
-      uint8_t destID = buf[1];
-      uint8_t senderID = buf[2];
-      uint8_t payloadLen = buf[3];
-      uint8_t receivedChecksum = buf[len - 1];
-      // Validate checksum
+      
+      // Parse message header fields
+      uint8_t destID = buf[1];       // Destination node ID
+      uint8_t senderID = buf[2];     // Sender node ID
+      uint8_t payloadLen = buf[3];   // Length of the payload
+      uint8_t receivedChecksum = buf[len - 1];  // Last byte is the checksum
+      
+      // Validate message integrity using checksum
       if (!validateChecksum(buf, len - 1, receivedChecksum)) {
           Serial.println("Checksum mismatch");
-          return;
+          return;  // Skip further processing if checksum is invalid
       }
 
-      // Filter messages by destination ID
+      // Check if this message is intended for this node
+      // Accept messages addressed to this node's ID or broadcast messages (0xFF)
       if (destID != node_id && destID != 0xFF) {  // 0xFF is for broadcast
           Serial.println("Message not for this node");
-          return;
+          return;  // Skip further processing
       }
 
+      // Print the received message in hexadecimal format for debugging
       RH_RF95::printBuffer("Received: ", buf, len);
+      
+      // Print the actual message content (payload)
       Serial.print("Got: ");
-      for (int i = 4; i < len - 1; i++) {  // Exclude checksum and starting
+      for (int i = 4; i < len - 1; i++) {  // Start from index 4 (after header) and exclude checksum
         Serial.print((char)buf[i]);
       }
       Serial.println();
+      
+      // Print the signal strength (RSSI) of the received message
       Serial.print("RSSI: ");
       Serial.println(rf95.lastRssi(), DEC);
 
-      display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);
+      // Update display to show message received
+      display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);  // Clear top line
       display.setCursor(0, 0);
       display.println("Message Received");
-      display.display();  
-      // Send a reply
-      uint8_t data[] = "ACKPACKET";
-      rf95.send(data, sizeof(data));
-      rf95.waitPacketSent();
+      display.display();
+      
+      // Send an acknowledgment reply
+      uint8_t data[] = "ACKPACKET";  // Acknowledgment message
+      rf95.send(data, sizeof(data));  // Send the acknowledgment
+      rf95.waitPacketSent();          // Wait until packet is sent
       Serial.println("Sent a reply");
-      display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);
+      
+      // Update display to show sending acknowledgment
+      display.fillRect(0, 0, SCREEN_WIDTH, 8, BLACK);  // Clear top line
       display.setCursor(0, 0);
       display.println("Sending Message");
       display.display();
     }
     else
     {
+      // If message reception failed
       Serial.println("Receive failed");
     }
   }
